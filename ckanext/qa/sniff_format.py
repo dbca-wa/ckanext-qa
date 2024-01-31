@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
-
-from io import BytesIO, open
+import json
+from io import open
 import sys
 import re
 import zipfile
@@ -10,10 +10,9 @@ import subprocess
 
 import xlrd
 import magic
-import messytables
 
 from ckan.lib import helpers as ckan_helpers
-
+from ckan.plugins.toolkit import config
 
 if sys.version_info[0] >= 3:
     unicode = str
@@ -39,6 +38,7 @@ def sniff_file_format(filepath):
     one.
     '''
     format_ = None
+    qsv_bin = config.get('ckanext.qa.qsv_bin')
     log.info('Sniffing file format of: %s', filepath)
     filepath_utf8 = filepath.encode('utf8') if isinstance(filepath, unicode) \
         else filepath
@@ -75,11 +75,9 @@ def sniff_file_format(filepath):
             if is_iati(buf):
                 format_ = {'format': 'IATI'}
         elif mime_type == 'application/csv':
-            with open(filepath, 'r', encoding='ISO-8859-1', newline=None) as f:
-                buf = f.read(10000)
-            if is_csv(buf):
+            if is_csv(filepath, qsv_bin):
                 format_ = {'format': 'CSV'}
-            elif is_psv(buf):
+            elif is_psv(filepath, qsv_bin):
                 format_ = {'format': 'PSV'}
 
         if format_:
@@ -97,9 +95,9 @@ def sniff_file_format(filepath):
                 if is_json(buf):
                     format_ = {'format': 'JSON'}
                 # is it CSV?
-                elif is_csv(buf):
+                elif is_csv(filepath, qsv_bin):
                     format_ = {'format': 'CSV'}
-                elif is_psv(buf):
+                elif is_psv(filepath, qsv_bin):
                     format_ = {'format': 'PSV'}
 
         if not format_:
@@ -117,9 +115,9 @@ def sniff_file_format(filepath):
                 if is_json(buf):
                     format_ = {'format': 'JSON'}
                 # is it CSV?
-                elif is_csv(buf):
+                elif is_csv(filepath, qsv_bin):
                     format_ = {'format': 'CSV'}
-                elif is_psv(buf):
+                elif is_psv(filepath, qsv_bin):
                     format_ = {'format': 'PSV'}
                 # XML files without the "<?xml ... ?>" tag end up here
                 elif is_xml_but_without_declaration(buf):
@@ -213,18 +211,52 @@ def is_json(buf):
     return True
 
 
-def is_csv(buf):
-    '''If the buffer is a CSV file then return True.'''
-    buf_rows = BytesIO(buf.encode('ISO-8859-1'))
-    table_set = messytables.CSVTableSet(buf_rows)
-    return _is_spreadsheet(table_set, 'CSV')
+def is_csv(filepath, qsv_bin):
+    '''If the file is a CSV file then return True.'''
+
+    try:
+        result = subprocess.run(
+            [
+                qsv_bin,
+                "sniff",
+                "--json",
+                filepath,
+            ],
+            check=True,
+            stdout=subprocess.PIPE
+        )
+    except subprocess.CalledProcessError as e:
+        log.info("Could not process given file as csv, so not as csv: {}".format(e))
+        return False
+
+    result = json.loads(result.stdout)
+    if result.get('delimiter_char') == ',':
+        return True
+    return False
 
 
-def is_psv(buf):
-    '''If the buffer is a PSV file then return True.'''
-    buf_rows = BytesIO(buf.encode('ISO-8859-1'))
-    table_set = messytables.CSVTableSet(buf_rows, delimiter='|')
-    return _is_spreadsheet(table_set, 'PSV')
+def is_psv(filepath, qsv_bin):
+    '''If the file is a PSV file then return True.'''
+
+    try:
+        result = subprocess.run(
+            [
+                qsv_bin,
+                "sniff",
+                "--json",
+                filepath,
+            ],
+            check=True,
+            stdout=subprocess.PIPE
+        )
+    except subprocess.CalledProcessError as e:
+        log.info("Could not process given file as psv, so not as p: {}".format(e))
+        return False
+
+    result = json.loads(result.stdout)
+    if result.get('delimiter_char') == '|':
+        return True
+    return False
 
 
 def _is_spreadsheet(table_set, format):
